@@ -1,0 +1,16 @@
+use anchor_lang::prelude::*;
+
+declare_id!("7yypKnJAZ9JjaemSA3A2Ha378sebeh6ciSvMy6pzHzdq");
+
+#[program]
+pub mod zuski {
+    use super::*;
+
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        msg!("Greetings from: {:?}", ctx.program_id);
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct Initialize {}
