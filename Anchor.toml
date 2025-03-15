@@ -12,7 +12,7 @@ zuski = "7yypKnJAZ9JjaemSA3A2Ha378sebeh6ciSvMy6pzHzdq"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "devnet"
+cluster = "https://api.testnet.sonic.game"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

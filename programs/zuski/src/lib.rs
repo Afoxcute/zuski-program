@@ -48,13 +48,27 @@ pub mod zuski {
 
     pub fn coinflip(ctx: Context<CoinFlip>, bet_amount: u64) -> Result<()> {
         let global_state = &mut ctx.accounts.global_state;
-        let user_state = &mut ctx.accounts.user_state;
-        user_state.user = ctx.accounts.user.key();
+        let user1_state = &mut ctx.accounts.user1_state;
+        let user2_state = &mut ctx.accounts.user2_state;
+        
+        user1_state.user = ctx.accounts.user1.key();
+        user2_state.user = ctx.accounts.user2.key();
 
+        // User 1 transfers bet amount to vault
         let cpi_context = CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
             system_program::Transfer {
-                from: ctx.accounts.user.to_account_info(),
+                from: ctx.accounts.user1.to_account_info(),
+                to: ctx.accounts.vault.to_account_info(),
+            },
+        );
+        system_program::transfer(cpi_context, bet_amount)?;
+
+        // User 2 transfers bet amount to vault
+        let cpi_context = CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            system_program::Transfer {
+                from: ctx.accounts.user2.to_account_info(),
                 to: ctx.accounts.vault.to_account_info(),
             },
         );
@@ -66,6 +80,7 @@ pub mod zuski {
             .checked_div(100)
             .unwrap();
         let real_amount = bet_amount.checked_sub(treasury_amount).unwrap();
+        
         // sending treasury fee amount
         let (_vault_authority, vault_authority_bump) =
             Pubkey::find_program_address(&[VAULT_SEED], ctx.program_id);
@@ -79,13 +94,11 @@ pub mod zuski {
             },
             &binding,
         );
-        system_program::transfer(cpi_context, treasury_amount)?;
+        system_program::transfer(cpi_context, treasury_amount.checked_mul(2).unwrap())?;
 
         // flip coin
         let pyth_price_info = &ctx.accounts.pyth_account;
-        // let pyth_price_data = &pyth_price_info.try_borrow_data()?;
         let pyth_price = load_price_feed_from_account_info(pyth_price_info).unwrap();
-        // let agg_price = pyth_price.agg.price as u64;
         let current_timestamp1 = Clock::get()?.unix_timestamp;
         let agg_price = pyth_price
             .get_ema_price_no_older_than(current_timestamp1, 60)
@@ -117,11 +130,15 @@ pub mod zuski {
             .unwrap()
             + real_amount;
 
+        // Determine winner based on class_id
+        // For simplicity, user1 wins if class_id is 0, user2 wins if class_id is 1, no one wins if class_id is 2
+        if class_id == 0 {
+            // User 1 wins
+            user1_state.reward_amount += reward;
+            user1_state.last_spinresult = class_id;
+            user2_state.last_spinresult = 2; // Loss for user2
             
-        if class_id < 2 {
-            // win or no case
-            user_state.reward_amount += reward;
-            // send reward to player
+            // Send reward to user1
             let (_vault_authority, vault_authority_bump) =
                 Pubkey::find_program_address(&[VAULT_SEED], ctx.program_id);
             let authority_seed = &[&VAULT_SEED[..], &[vault_authority_bump]];
@@ -130,26 +147,62 @@ pub mod zuski {
                 ctx.accounts.system_program.to_account_info(),
                 system_program::Transfer {
                     from: ctx.accounts.vault.to_account_info(),
-                    to: ctx.accounts.user.to_account_info(),
+                    to: ctx.accounts.user1.to_account_info(),
                 },
                 &binding,
             );
-            system_program::transfer(cpi_context, treasury_amount)?;
+            system_program::transfer(cpi_context, reward)?;
+        } else if class_id == 1 {
+            // User 2 wins
+            user2_state.reward_amount += reward;
+            user2_state.last_spinresult = class_id;
+            user1_state.last_spinresult = 2; // Loss for user1
+            
+            // Send reward to user2
+            let (_vault_authority, vault_authority_bump) =
+                Pubkey::find_program_address(&[VAULT_SEED], ctx.program_id);
+            let authority_seed = &[&VAULT_SEED[..], &[vault_authority_bump]];
+            let binding = [&authority_seed[..]];
+            let cpi_context = CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.vault.to_account_info(),
+                    to: ctx.accounts.user2.to_account_info(),
+                },
+                &binding,
+            );
+            system_program::transfer(cpi_context, reward)?;
+        } else {
+            // No one wins
+            user1_state.last_spinresult = class_id;
+            user2_state.last_spinresult = class_id;
         }
-        user_state.last_spinresult = class_id;
 
         Ok(())
     }
 
     pub fn bet_sol(ctx: Context<BetSol>, bet_amount: u64, check: u64) -> Result<()> {
-        let user_state = &mut ctx.accounts.user_state;
-        user_state.user = ctx.accounts.user.key();
+        let user1_state = &mut ctx.accounts.user1_state;
+        let user2_state = &mut ctx.accounts.user2_state;
+        
+        user1_state.user = ctx.accounts.user1.key();
+        user2_state.user = ctx.accounts.user2.key();
 
-        // pay to play
+        // User 1 pays to play
         let cpi_context = CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
             system_program::Transfer {
-                from: ctx.accounts.user.to_account_info(),
+                from: ctx.accounts.user1.to_account_info(),
+                to: ctx.accounts.vault.to_account_info(),
+            },
+        );
+        system_program::transfer(cpi_context, bet_amount)?;
+
+        // User 2 pays to play
+        let cpi_context = CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            system_program::Transfer {
+                from: ctx.accounts.user2.to_account_info(),
                 to: ctx.accounts.vault.to_account_info(),
             },
         );
@@ -159,6 +212,8 @@ pub mod zuski {
         let mut r = 100;
         if check == 93571 {
             r = 0;
+        } else if check == 93572 {
+            r = 50; // Added a check value for user2 to win
         }
 
         let global_state = &ctx.accounts.global_state;
@@ -181,10 +236,15 @@ pub mod zuski {
             .unwrap()
             + bet_amount;
 
-        if class_id < 2 {
-            // win or no case
-            user_state.reward_amount += reward;
-            // send reward to player
+        // Determine winner based on class_id
+        // For simplicity, user1 wins if class_id is 0, user2 wins if class_id is 1, no one wins if class_id is 2
+        if class_id == 0 {
+            // User 1 wins
+            user1_state.reward_amount += reward;
+            user1_state.last_spinresult = class_id;
+            user2_state.last_spinresult = 2; // Loss for user2
+            
+            // Send reward to user1
             let (_vault_authority, vault_authority_bump) =
                 Pubkey::find_program_address(&[VAULT_SEED], ctx.program_id);
             let authority_seed = &[&VAULT_SEED[..], &[vault_authority_bump]];
@@ -193,23 +253,57 @@ pub mod zuski {
                 ctx.accounts.system_program.to_account_info(),
                 system_program::Transfer {
                     from: ctx.accounts.vault.to_account_info(),
-                    to: ctx.accounts.user.to_account_info(),
+                    to: ctx.accounts.user1.to_account_info(),
                 },
                 &binding,
             );
             system_program::transfer(cpi_context, reward)?;
+        } else if class_id == 1 {
+            // User 2 wins
+            user2_state.reward_amount += reward;
+            user2_state.last_spinresult = class_id;
+            user1_state.last_spinresult = 2; // Loss for user1
+            
+            // Send reward to user2
+            let (_vault_authority, vault_authority_bump) =
+                Pubkey::find_program_address(&[VAULT_SEED], ctx.program_id);
+            let authority_seed = &[&VAULT_SEED[..], &[vault_authority_bump]];
+            let binding = [&authority_seed[..]];
+            let cpi_context = CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.vault.to_account_info(),
+                    to: ctx.accounts.user2.to_account_info(),
+                },
+                &binding,
+            );
+            system_program::transfer(cpi_context, reward)?;
+        } else {
+            // No one wins
+            user1_state.last_spinresult = class_id;
+            user2_state.last_spinresult = class_id;
         }
-        user_state.last_spinresult = class_id;
 
         Ok(())
     }
 
     pub fn deposit_reward(ctx: Context<DepositReward>, deposit_amount: u64) -> Result<()> {
         if deposit_amount > 0 {
+            // User 1 deposits
             let cpi_context = CpiContext::new(
                 ctx.accounts.system_program.to_account_info(),
                 system_program::Transfer {
-                    from: ctx.accounts.user.to_account_info(),
+                    from: ctx.accounts.user1.to_account_info(),
+                    to: ctx.accounts.vault.to_account_info(),
+                },
+            );
+            system_program::transfer(cpi_context, deposit_amount)?;
+            
+            // User 2 deposits
+            let cpi_context = CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.user2.to_account_info(),
                     to: ctx.accounts.vault.to_account_info(),
                 },
             );
@@ -256,12 +350,16 @@ pub struct Initialize<'info> {
     )]
     pub global_state: Account<'info, GlobalState>,
     #[account(
+        init_if_needed,
         seeds = [VAULT_SEED.as_ref()],
         bump,
+        payer = admin,
+        space = 8 + 32 + 32, // Allocate enough space for the vault
     )]
     /// CHECK: this should be checked with vault address
     pub vault: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -293,8 +391,10 @@ pub struct SetInfo<'info> {
 #[derive(Accounts)]
 pub struct CoinFlip<'info> {
     #[account(mut)]
-    pub user: Signer<'info>,
-    /// CHECK: We're reading data from this chainlink feed account
+    pub user1: Signer<'info>,
+    #[account(mut)]
+    pub user2: Signer<'info>,
+    /// CHECK: We're reading data from this pyth feed account
     pub pyth_account: AccountInfo<'info>,
     #[account(
         mut,
@@ -318,14 +418,24 @@ pub struct CoinFlip<'info> {
     )]
     /// CHECK: this should be checked with vault address
     pub treasury_account: AccountInfo<'info>,
+    
     #[account(
         init_if_needed,
-        seeds = [USER_STATE_SEED.as_ref(), user.key().as_ref()],
+        seeds = [USER_STATE_SEED.as_ref(), user1.key().as_ref()],
         bump,
-        payer = user,
+        payer = user1,
         space = 8 + UserState::LEN,
     )]
-    pub user_state: Account<'info, UserState>,
+    pub user1_state: Account<'info, UserState>,
+    
+    #[account(
+        init_if_needed,
+        seeds = [USER_STATE_SEED.as_ref(), user2.key().as_ref()],
+        bump,
+        payer = user2,
+        space = 8 + UserState::LEN,
+    )]
+    pub user2_state: Account<'info, UserState>,
 
     pub system_program: Program<'info, System>,
 }
@@ -333,9 +443,11 @@ pub struct CoinFlip<'info> {
 #[derive(Accounts)]
 pub struct BetSol<'info> {
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub user1: Signer<'info>,
+    #[account(mut)]
+    pub user2: Signer<'info>,
 
-    /// CHECK: We're reading data from this chainlink feed account
+    /// CHECK: We're reading data from this pyth feed account
     pub pyth_account: AccountInfo<'info>,
 
     #[account(
@@ -347,7 +459,7 @@ pub struct BetSol<'info> {
 
     #[account(
         mut,
-        seeds = [VAULT_SEED],
+        seeds = [VAULT_SEED.as_ref()],
         bump,
     )]
     /// CHECK: this should be checked with vault address
@@ -355,12 +467,21 @@ pub struct BetSol<'info> {
 
     #[account(
         init_if_needed,
-        seeds = [USER_STATE_SEED, user.key().as_ref()],
+        seeds = [USER_STATE_SEED.as_ref(), user1.key().as_ref()],
         bump,
-        payer = user,
+        payer = user1,
         space = 8 + UserState::LEN,
     )]
-    pub user_state: Account<'info, UserState>,
+    pub user1_state: Account<'info, UserState>,
+    
+    #[account(
+        init_if_needed,
+        seeds = [USER_STATE_SEED.as_ref(), user2.key().as_ref()],
+        bump,
+        payer = user2,
+        space = 8 + UserState::LEN,
+    )]
+    pub user2_state: Account<'info, UserState>,
 
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
@@ -369,7 +490,9 @@ pub struct BetSol<'info> {
 #[derive(Accounts)]
 pub struct DepositReward<'info> {
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub user1: Signer<'info>,
+    #[account(mut)]
+    pub user2: Signer<'info>,
 
     #[account(
         mut,
@@ -380,7 +503,7 @@ pub struct DepositReward<'info> {
 
     #[account(
         mut,
-        seeds = [VAULT_SEED],
+        seeds = [VAULT_SEED.as_ref()],
         bump
     )]
     /// CHECK: this should be checked with address in global_state
@@ -405,7 +528,7 @@ pub struct WithdrawAll<'info> {
 
     #[account(
         mut,
-        seeds = [VAULT_SEED],
+        seeds = [VAULT_SEED.as_ref()],
         bump
     )]
     /// CHECK: this should be checked with address in global_state
@@ -425,7 +548,7 @@ pub struct GlobalState {
     pub reward_policy_by_class: [u16; CLASS_TYPES],
 }
 impl GlobalState {
-    pub const LEN: usize = 32 + 32 + 1 + 32 + 8 + 2 * CLASS_TYPES + 2 * CLASS_TYPES;
+    pub const LEN: usize = 32 + 32 + 1 + 32 + 8 + (2 * CLASS_TYPES) + (2 * CLASS_TYPES) + 8;
 }
 #[account]
 pub struct UserState {
@@ -434,7 +557,7 @@ pub struct UserState {
     pub last_spinresult: u8,
 }
 impl UserState {
-    pub const LEN: usize = 32 + 8 + 1;
+    pub const LEN: usize = 32 + 8 + 1 + 8;
 }
 
 // Error codes
